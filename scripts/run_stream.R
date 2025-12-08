@@ -8,7 +8,7 @@ ensure_packages <- function(pkgs) {
   invisible(NULL)
 }
 
-run_stream_with_cfg <- function(cfg, write_out = TRUE) {
+run_stream_with_cfg <- function(cfg, write_out = TRUE, quiet = FALSE) {
   stream <- simulate_stream(
     n_steps = cfg$stream$n_steps,
     markets = cfg$stream$markets,
@@ -17,7 +17,7 @@ run_stream_with_cfg <- function(cfg, write_out = TRUE) {
     drift = cfg$stream$drift,
     seed = cfg$stream$seed
   )
-  log_event("info", "Generated stream", list(rows = nrow(stream)))
+  log_event("info", "Generated stream", list(rows = nrow(stream)), quiet = quiet)
 
   win_list <- window_stream(
     data = stream,
@@ -150,7 +150,7 @@ run_stream_with_cfg <- function(cfg, write_out = TRUE) {
     )
 
     anomalies <- sum(ens_flag)
-    log_event("info", "Window scored", list(window = idx, anomalies = anomalies, drift = drift_res$drift))
+    log_event("info", "Window scored", list(window = idx, anomalies = anomalies, drift = drift_res$drift), quiet = quiet)
     base_tbl$drift_detected <- drift_res$drift
     base_tbl$ks_metric <- drift_res$metrics$ks %||% NA
     base_tbl$mean_shift <- drift_res$metrics$mean_shift %||% NA
@@ -170,7 +170,7 @@ run_stream_with_cfg <- function(cfg, write_out = TRUE) {
     if (!dir.exists(cfg$logging$out_dir)) dir.create(cfg$logging$out_dir, recursive = TRUE)
     outfile <- file.path(cfg$logging$out_dir, cfg$logging$output_name %||% "baseline_anomalies.csv")
     readr::write_csv(out, outfile)
-    log_event("info", "Wrote anomaly log", list(path = outfile))
+    log_event("info", "Wrote anomaly log", list(path = outfile), quiet = quiet)
   }
   list(out = out, history = ens_state$history)
 }

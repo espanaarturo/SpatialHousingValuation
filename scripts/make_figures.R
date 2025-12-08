@@ -8,8 +8,8 @@ dir.create("results/figures", showWarnings = FALSE, recursive = TRUE)
 exp_summary_path <- "results/experiment_summary.csv"
 exp_files <- list.files("results", pattern = "^exp_.*\\.csv$", full.names = TRUE)
 
-save_plot <- function(p, name, width = 7, height = 5) {
-  ggsave(file.path("results/figures", name), p, width = width, height = height, dpi = 120)
+save_plot <- function(p, name, width = 9, height = 5.5) {
+  ggsave(file.path("results/figures", name), p, width = width, height = height, dpi = 300)
 }
 
 if (file.exists(exp_summary_path)) {
@@ -43,19 +43,24 @@ if (length(exp_files)) {
   }
 
   if ("weight_baseline" %in% names(df_all)) {
-    p_w <- ggplot(df_all, aes(win)) +
+    df_w <- df_all %>% filter(!is.na(weight_baseline) | !is.na(weight_iso) | !is.na(weight_ae))
+    p_w <- ggplot(df_w, aes(win)) +
       geom_line(aes(y = weight_baseline, color = "baseline")) +
-      geom_line(aes(y = weight_iso, color = "iso")) +
-      geom_line(aes(y = weight_ae, color = "ae")) +
+      geom_line(aes(y = weight_iso, color = "iso"))
+    if ("weight_ae" %in% names(df_w) && any(!is.na(df_w$weight_ae))) {
+      p_w <- p_w + geom_line(aes(y = weight_ae, color = "ae"))
+    }
+    p_w <- p_w +
       labs(title = "Ensemble weight trajectories", x = "Window", y = "Weight") +
+      scale_color_manual(values = c(baseline = "#2c3e50", iso = "#2980b9", ae = "#8e44ad")) +
       theme_minimal()
     save_plot(p_w, "ensemble_weights.png")
   }
 
   if ("top_features" %in% names(df_all)) {
     top_feat_df <- df_all %>%
-      slice_max(score_ensemble, n = 1, with_ties = FALSE) %>%
       tidyr::separate_rows(top_features, sep = ";") %>%
+      filter(!stringr::str_detect(top_features, "^PC")) %>%
       count(top_features, sort = TRUE) %>%
       slice_head(n = 10)
     if (nrow(top_feat_df)) {

@@ -33,41 +33,61 @@ ui <- page_navbar(
           selectInput("window_type", "Window type", c("sliding","tumbling")),
           checkboxGroupInput("detectors", "Detectors", choices = detector_choices, selected = detector_selected),
           checkboxInput("ensemble_on", "Adaptive Ensemble", TRUE),
-          actionButton("step_btn", "Step (advance one window)", class = "btn-primary"),
-          actionButton("auto_btn", "Auto-play", class = "btn-success"),
-          actionButton("stop_btn", "Stop", class = "btn-outline-secondary")
+          actionButton("step_btn", "Step", class = "btn-primary"),
+          actionButton("auto_btn", "Play", class = "btn-success"),
+          actionButton("stop_btn", "Pause", class = "btn-outline-secondary"),
+          actionButton("reset_btn", "Reset", class = "btn-outline-danger"),
+          actionButton("export_btn", "Export run", class = "btn-outline-primary")
         ),
         main = fluidPage(
           fluidRow(
-            column(6, plotOutput("plot_market", height = 300)),
-            column(6, plotOutput("plot_drift", height = 300))
+            column(6, card(card_header("Market & Anomalies"), plotOutput("plot_market", height = 300))),
+            column(6, card(card_header("Drift (KS)"), plotOutput("plot_drift", height = 300)))
           ),
           fluidRow(
-            column(6, plotOutput("plot_weights", height = 250)),
-            column(6, plotOutput("plot_thresholds", height = 250))
+            column(6, card(card_header("Ensemble Weights"), plotOutput("plot_weights", height = 250))),
+            column(6, card(card_header("Ensemble Score vs Threshold"), plotOutput("plot_thresholds", height = 250)))
           ),
-          tableOutput("table_head")
+          fluidRow(
+            column(12, card(card_header("Run summary"), tableOutput("run_summary")))
+          ),
+          card(card_header("Preview"), tableOutput("table_head"))
         )
       )
   ),
   nav("Explanations", icon = icon("list"),
       fluidPage(
-        selectInput("expl_window", "Select window", choices = NULL),
-        verbatimTextOutput("expl_text"),
-        tableOutput("expl_scores")
+        card(
+          card_header("Select window"),
+          selectInput("expl_window", "Window", choices = NULL)
+        ),
+        card(
+          card_header("Explanation"),
+          verbatimTextOutput("expl_text"),
+          tableOutput("expl_scores")
+        )
       )
   ),
   nav("Experiment Viewer", icon = icon("chart-bar"),
       fluidPage(
-        actionButton("run_exp", "Run preset experiment", class = "btn-primary"),
-        tableOutput("exp_table"),
-        plotOutput("exp_plot", height = 300)
+        card(
+          card_header("Run preset sweep"),
+          actionButton("run_exp", "Run preset experiment", class = "btn-primary")
+        ),
+        card(
+          card_header("Results"),
+          tableOutput("exp_table"),
+          plotOutput("exp_plot", height = 300)
+        )
       )
   )
 )
 
 server <- function(input, output, session) {
   auto_running <- reactiveVal(FALSE)
+  current_idx <- reactiveVal(1)
+  run_cache <- reactiveVal(NULL)
+
   current_cfg <- reactive({
     cfg <- yaml::read_yaml("../configs/demo.yaml")
     cfg$stream$drift$enabled <- input$drift_type != "none"
@@ -84,19 +104,28 @@ server <- function(input, output, session) {
     cfg
   })
 
-  stream_state <- reactiveValues(data = NULL, idx = 0, windows = NULL, pca = NULL, history = NULL)
-
-  observeEvent(input$step_btn, {
-    run_once()
-  })
-
-  run_once <- function() {
+  generate_run <- function() {
     cfg <- current_cfg()
-    res <- run_stream_cfg(cfg)
-    stream_state$data <- res$out
-    stream_state$history <- res$history
+    res <- run_stream_with_cfg(cfg, write_out = FALSE, quiet = TRUE)
+    run_cache(list(data = res$out, cfg = cfg, max_win = max(as.numeric(res$out$window_id))))
+    current_idx(1)
+    auto_running(FALSE)
     update_select_input_choices()
   }
+
+  observeEvent(list(input$drift_type, input$drift_mag, input$anom_rate, input$dim, input$window_type, input$detectors, input$ensemble_on), {
+    generate_run()
+  })
+
+  observeEvent(input$reset_btn, {
+    generate_run()
+  })
+
+  observeEvent(input$step_btn, {
+    req(run_cache())
+    idx <- current_idx()
+    if (idx < run_cache()$max_win) current_idx(idx + 1)
+  })
 
   observeEvent(input$auto_btn, {
     auto_running(TRUE)
@@ -105,12 +134,23 @@ server <- function(input, output, session) {
     auto_running(FALSE)
   })
 
-  auto_inv <- reactiveTimer(1000)
   observe({
-    if (isTRUE(auto_running())) {
-      auto_inv()
-      run_once()
+    req(run_cache())
+    if (!isTRUE(auto_running())) return()
+    if (current_idx() >= run_cache()$max_win) {
+      auto_running(FALSE)
+      return()
     }
+    invalidateLater(800, session)
+    current_idx(current_idx() + 1)
+  })
+
+  observeEvent(input$export_btn, {
+    req(run_cache())
+    df <- run_cache()$data
+    if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+    readr::write_csv(df, "results/shiny_stream.csv")
+    showNotification("Exported to results/shiny_stream.csv", type = "message")
   })
 
   run_stream_cfg <- function(cfg) {
@@ -136,66 +176,97 @@ server <- function(input, output, session) {
     res
   }
 
+  current_data <- reactive({
+    req(run_cache())
+    df <- run_cache()$data
+    df %>% filter(as.numeric(window_id) <= current_idx())
+  })
+
   output$plot_market <- renderPlot({
-    req(stream_state$data)
-    df <- stream_state$data
+    req(current_data())
+    df <- current_data()
     ggplot(df, aes(timestamp, price)) +
       geom_line(color = "#2c3e50") +
-      geom_point(data = subset(df, is_anomaly_ensemble), aes(y = price), color = "#e74c3c", size = 1.5) +
+      geom_point(data = subset(df, is_anomaly_ensemble), aes(y = price, color = "Anomaly"), size = 1.5) +
+      scale_color_manual(values = c("Anomaly" = "#e74c3c"), guide = guide_legend(title = "")) +
+      labs(title = "Market price with anomalies", x = "Time", y = "Price") +
       theme_minimal()
   })
 
   output$plot_drift <- renderPlot({
-    req(stream_state$data)
-    df <- stream_state$data
-    ggplot(df, aes(as.numeric(window_id), ks_metric)) +
-      geom_line(color = "#2980b9") +
-      geom_point(aes(color = drift_detected)) +
-      labs(x = "Window", y = "KS metric") +
-      theme_minimal()
+    req(current_data())
+    df <- current_data()
+    ggplot(df, aes(as.numeric(window_id), ks_metric, color = drift_detected)) +
+      geom_line() +
+      geom_point() +
+      labs(title = "Drift metric (KS)", x = "Window", y = "KS") +
+      theme_minimal() +
+      scale_color_manual(values = c("TRUE" = "#e67e22", "FALSE" = "#2980b9"), guide = guide_legend(title = "Drift"))
   })
 
   output$plot_weights <- renderPlot({
-    req(stream_state$data)
-    df <- stream_state$data
-    ggplot(df, aes(as.numeric(window_id))) +
-      geom_line(aes(y = weight_baseline, color = "baseline")) +
-      geom_line(aes(y = weight_iso, color = "iso")) +
-      geom_line(aes(y = weight_ae, color = "ae")) +
-      labs(x = "Window", y = "Weight") +
+    req(current_data())
+    df <- current_data()
+    plt <- ggplot(df, aes(as.numeric(window_id)))
+    plt <- plt + geom_line(aes(y = weight_baseline, color = "baseline"))
+    if ("weight_iso" %in% names(df)) plt <- plt + geom_line(aes(y = weight_iso, color = "iso"))
+    if ("weight_ae" %in% names(df) && any(!is.na(df$weight_ae))) plt <- plt + geom_line(aes(y = weight_ae, color = "ae"))
+    plt + labs(title = "Ensemble weights", x = "Window", y = "Weight") +
+      scale_color_manual(values = c(baseline = "#2c3e50", iso = "#2980b9", ae = "#8e44ad")) +
       theme_minimal()
   })
 
   output$plot_thresholds <- renderPlot({
-    req(stream_state$data)
-    df <- stream_state$data
+    req(current_data())
+    df <- current_data()
     ggplot(df, aes(as.numeric(window_id))) +
-      geom_line(aes(y = score_ensemble, color = "ensemble_score")) +
-      geom_hline(aes(yintercept = 1.0, color = "ensemble_threshold"), linetype = "dashed") +
+      geom_line(aes(y = score_ensemble, color = "score")) +
+      geom_hline(yintercept = 1.0, linetype = "dashed", color = "#7f8c8d") +
+      labs(title = "Ensemble score vs threshold", x = "Window", y = "Score") +
+      scale_color_manual(values = c(score = "#16a085"), guide = "none") +
       theme_minimal()
   })
 
   output$table_head <- renderTable({
-    req(stream_state$data)
-    cols <- intersect(c("window_id","timestamp","score","score_iso","score_ae","score_ensemble","is_anomaly_ensemble","top_features"), names(stream_state$data))
-    head(stream_state$data[, cols, drop = FALSE], 5)
+    req(current_data())
+    df <- current_data()
+    cols <- intersect(c("window_id","timestamp","score","score_iso","score_ae","score_ensemble","is_anomaly_ensemble","top_features"), names(df))
+    head(df[, cols, drop = FALSE], 5)
+  })
+
+  output$run_summary <- renderTable({
+    req(run_cache())
+    cfg <- run_cache()$cfg
+    data.frame(
+      drift_type = cfg$stream$drift$type,
+      drift_magnitude = cfg$stream$drift$magnitude,
+      anomaly_rate = cfg$stream$anomaly_rate,
+      target_dim = cfg$features$target_dim,
+      window_type = cfg$window$type,
+      detectors = paste(c(
+        if (cfg$detectors$baseline_mad$enabled) "baseline",
+        if (cfg$detectors$isolation_forest$enabled) "iso",
+        if (isTRUE(cfg$detectors$autoencoder_torch$enabled)) "ae"), collapse = ", "),
+      ensemble = ifelse(cfg$ensemble$enabled, "on", "off"),
+      stringsAsFactors = FALSE
+    )
   })
 
   update_select_input_choices <- function() {
-    req(stream_state$data)
-    windows <- unique(stream_state$data$window_id)
+    req(run_cache())
+    windows <- unique(run_cache()$data$window_id)
     updateSelectInput(session, "expl_window", choices = windows, selected = tail(windows, 1))
   }
 
   output$expl_text <- renderText({
-    req(stream_state$data, input$expl_window)
-    df <- stream_state$data %>% filter(window_id == input$expl_window)
+    req(run_cache(), input$expl_window)
+    df <- run_cache()$data %>% filter(window_id == input$expl_window)
     df$explanation_text[1]
   })
 
   output$expl_scores <- renderTable({
-    req(stream_state$data, input$expl_window)
-    df <- stream_state$data %>% filter(window_id == input$expl_window)
+    req(run_cache(), input$expl_window)
+    df <- run_cache()$data %>% filter(window_id == input$expl_window)
     cols <- intersect(c("score","score_iso","score_ae","score_ensemble","is_anomaly_true","is_anomaly_ensemble"), names(df))
     df %>% select(all_of(cols)) %>% head(10)
   })

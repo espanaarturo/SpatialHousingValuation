@@ -68,6 +68,8 @@ Tabs:
 - Enable via `detectors$autoencoder_torch$enabled: true` in config.
 - CI does not require torch; baseline + ISO always run.
 
+Autoplay note: the app generates a single run per settings and plays back window-by-window; Play/Pause/Reset controls advance the cached run without rerunning the full pipeline. Export saves the current run to `results/shiny_stream.csv`.
+
 ## CI
 - GitHub Actions: renv::restore(), testthat, and a small smoke experiment (`experiment_small.yaml`, AE off).
 

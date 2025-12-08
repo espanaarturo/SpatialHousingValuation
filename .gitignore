@@ -23,3 +23,6 @@ results/*
 # Optional: data (if you add real datasets later)
 data/*
 !data/README.md
+
+# Shiny generated outputs
+apps/results/
