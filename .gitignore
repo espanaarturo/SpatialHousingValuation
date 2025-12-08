@@ -1,0 +1,25 @@
+﻿# R / RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# renv (do NOT commit the library)
+renv/library/
+renv/staging/
+renv/.cache/
+renv/python/
+renv/local/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large/Generated outputs (keep figures if you want)
+results/*
+!results/figures/
+!results/figures/*.png
+
+# Optional: data (if you add real datasets later)
+data/*
+!data/README.md

@@ -1,0 +1,59 @@
+stream:
+  seed: 123
+  n_steps: 120
+  base_rate: 1000
+  markets: ["metro_north", "metro_south"]
+  anomaly_rate: 0.05
+  drift:
+    enabled: true
+    type: "abrupt_rate_hike"
+    start_step: 80
+    magnitude: 0.1
+
+window:
+  type: "sliding"
+  size: 40
+  step: 10
+
+features:
+  target_dim: 150
+  interaction: true
+  rolling_stats: true
+  noise_sd: 0.1
+
+pca:
+  k: 8
+  refit_every: 4
+
+detectors:
+  baseline_mad:
+    enabled: true
+    threshold_z: 3.5
+    min_points: 10
+    adaptive: true
+    threshold_quantile: 0.99
+  isolation_forest:
+    enabled: true
+    ntrees: 100
+    sample_size: 128
+    ndim: 1
+    threshold_quantile: 0.98
+  autoencoder_torch:
+    enabled: false
+    hidden: [64, 32]
+    latent: 12
+    batch_size: 32
+    epochs: 3
+    lr: 0.001
+    threshold_quantile: 0.99
+
+ensemble:
+  enabled: true
+  alpha: 0.3
+  threshold: 1.0
+
+logging:
+  level: "info"
+  out_dir: "results"
+  output_name: "baseline_anomalies_small.csv"
+

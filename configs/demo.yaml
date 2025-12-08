@@ -1,0 +1,60 @@
+stream:
+  seed: 42
+  n_steps: 200
+  base_rate: 1000
+  markets: ["metro_north", "metro_south"]
+  anomaly_rate: 0.05
+  drift:
+    enabled: true
+    type: "abrupt_rate_hike" # options: abrupt_rate_hike, gradual_seasonal, local_micro, none
+    start_step: 120
+    magnitude: 0.15
+
+window:
+  type: "sliding"
+  size: 50
+  step: 10
+
+features:
+  target_dim: 300
+  interaction: true
+  rolling_stats: true
+  noise_sd: 0.1
+
+pca:
+  k: 10
+  refit_every: 5
+
+detectors:
+  baseline_mad:
+    enabled: true
+    threshold_z: 3.5
+    min_points: 20
+    adaptive: true
+    threshold_quantile: 0.995
+  isolation_forest:
+    enabled: true
+    ntrees: 200
+    sample_size: 256
+    ndim: 1
+    threshold_quantile: 0.98
+  autoencoder_torch:
+    enabled: false # enable after torch::install_torch()
+    hidden: [128, 64]
+    latent: 16
+    batch_size: 64
+    epochs: 5
+    lr: 0.001
+    threshold_quantile: 0.99
+
+ensemble:
+  enabled: true
+  alpha: 0.3
+  threshold: 1.0
+
+logging:
+  level: "info"
+  out_dir: "results"
+  output_name: "baseline_anomalies.csv"
+
+

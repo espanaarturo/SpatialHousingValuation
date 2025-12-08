@@ -1,0 +1,35 @@
+name: R CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.3.3"
+
+      - name: Setup R dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            renv
+          needs: |
+            testthat
+
+      - name: Restore renv
+        run: Rscript -e "renv::restore(prompt = FALSE)"
+
+      - name: Run tests
+        run: Rscript -e "testthat::test_dir('tests/testthat')"
+
+      - name: Smoke experiment
+        run: Rscript -e "source('scripts/run_experiment.R'); run_experiment('configs/experiment_small.yaml', drift_types=c('abrupt_rate_hike'), anomaly_rates=c(0.05), target_dims=c(100))"
+
