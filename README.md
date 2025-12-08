@@ -1,107 +1,81 @@
 # Scalable, Adaptive Anomaly Detection for Housing Streams
 
-This repo is a portfolio-ready, production-flavored R project for streaming, drift-aware anomaly detection on housing/real-estate signals.
+An R implementation for streaming, drift-aware anomaly detection on housing/real-estate signals, including windowed processing, adaptive ensemble scoring, and explainability mapped back to original features.
 
-## Quickstart (Milestone 1)
+## What this project does
+- Windowed streaming with drift/anomaly injection
+- High-dimensional feature expansion
+- Rolling PCA with refit schedule
+- Drift detection (KS/mean/variance) and drift-triggered recalibration
+- Detectors: baseline MAD, Isolation Forest, optional torch autoencoder
+- Adaptive ensemble with weight trajectories
+- Explainability with PCA back-mapping to original/expanded housing features
 
-1) Ensure R (>=4.5) is installed and on PATH.
-2) Project-scoped deps via renv:
-   ```powershell
-   & "C:\Program Files\R\R-4.5.2\bin\R.exe" --vanilla -q -e "renv::restore()"
-   ```
-3) Run the stream with drift + feature expansion + rolling PCA + multi-detector scoring:
-   ```R
-   source("scripts/run_stream.R")
-   run_stream("configs/demo.yaml")
-   ```
+## Quickstart
+```r
+install.packages("renv")
+renv::restore()
+source("scripts/run_stream.R")
+run_stream("configs/demo.yaml")
+```
 
-Outputs: `results/baseline_anomalies.csv` (or config `logging$output_name`) with:
-- per-detector scores/flags (baseline, isolation forest, optional torch AE)
-- drift flags/metrics
-- ensemble score/flag + weights per window
-- mapped top features + explanation text
+## Outputs
+Default: `results/baseline_anomalies.csv` (or `logging$output_name`), containing:
+- Per-detector scores/flags (baseline, isolation forest, optional torch AE)
+- Ensemble score/flag and weights
+- Drift metrics (KS/mean/variance) and drift flag
+- `top_features` and `explanation_text`
+- `is_anomaly_true` when using injected truth
 
-## Structure
-- `configs/` configuration files (start with `demo.yaml`)
+## Experiment sweeps
+```r
+source("scripts/run_experiment.R")
+run_experiment("configs/experiment_small.yaml")
+```
+
+## Shiny demo
+```r
+shiny::runApp("apps")
+```
+Tabs:
+- Live Stream: adjust drift/anomaly/dim/window; toggle detectors/ensemble; step or auto-play; plots for market + anomalies, drift metric, ensemble weights, thresholds.
+- Explanations: select a window to view top_features, explanation_text, and per-detector scores.
+- Experiment Viewer: run preset sweeps and view summary table/plot.
+
+## Project structure
+- `configs/` (e.g., `demo.yaml`, `experiment_small.yaml`)
 - `R/streaming/` simulators + windowing
-- `R/detectors/` detector interfaces and implementations
-- `R/utils/` lightweight logging
-- `scripts/` entrypoints (e.g., `run_stream.R`)
-- `tests/` (to be added)
-- `apps/` Shiny demo (later milestone)
+- `R/features/` expansion + PCA
+- `R/drift/` drift detection
+- `R/detectors/` detectors
+- `R/ensemble/` adaptive ensemble
+- `R/explain/` explanation helpers
+- `scripts/` run_stream, run_experiment, make_figures
+- `apps/` Shiny app
+- `tests/` testthat suite
+- `results/` outputs and figures
 
-## State/Interface Conventions
-- Stream schema: `timestamp`, `id`, `market`, numeric signals (`price`, `rent`, `days_on_market`, `inventory`, `rate_proxy`, `unemp_proxy`), `is_anomaly_true`.
-- Detector interface: `fit_initial`, `partial_fit`, `score`, `detect`; state object created via `new_detector_state`.
-- Feature expansion: `expand_features()` supports interaction terms, rolling stats, and noise features to reach target dimensionality.
-- Rolling PCA: `fit_pca_state()`, `maybe_refit_pca()` manage refit schedule; `transform_pca()` applied per window.
-- Drift detection: `detect_drift()` computes KS/mean/variance shifts; drift flags are logged per window.
+## Config overview
+- `configs/demo.yaml`: main demo run.
+- `configs/experiment_small.yaml`: quicker sweep for CI/smoke tests.
 
-## Experiments
-- Sweep drift type, anomaly rate, dimensionality:
-  ```R
-  source("scripts/run_experiment.R")
-  run_experiment()
-  ```
-- Summary saved to `results/experiment_summary.csv`; per-run outputs saved to `results/exp_*.csv`.
-
-## Torch note
-- Autoencoder detector depends on `torch`. Install once:
-  ```R
+## Torch autoencoder (optional)
+- Install if desired:
+  ```r
   install.packages("torch")
   torch::install_torch()
   ```
-- Then set `detectors$autoencoder_torch$enabled: true` in `configs/demo.yaml`.
-- CI skips autoencoder (torch optional); baseline + ISO always run.
+- Enable via `detectors$autoencoder_torch$enabled: true` in config.
+- CI does not require torch; baseline + ISO always run.
 
-## Ensemble (Milestone 4)
-- Config block `ensemble` controls alpha and threshold.
-- Adaptive weights update via EMA on window-level F1 when truth available; fallback to stability heuristic otherwise.
-- Weight trajectories are logged per window in result CSV columns `weight_*`.
+## CI
+- GitHub Actions: renv::restore(), testthat, and a small smoke experiment (`experiment_small.yaml`, AE off).
 
-## Shiny Demo (Milestone 5)
-- Launch:
-  ```R
-  shiny::runApp("apps")
-  ```
-- Tabs:
-  - Live Stream: adjust drift/anomaly/dim/window; toggle detectors/ensemble; step or auto-play; see market + anomaly markers, drift metric, ensemble weights, thresholds.
-  - Explanations: pick a window to view top_features, explanation_text, per-detector scores.
-  - Experiment Viewer: run preset sweeps and view summary table/plot.
-- If torch is not installed, AE controls are hidden/disabled; app still works with baseline + ISO.
-- Outputs saved to `results/shiny_stream.csv` when running the live stream.
-
-## Architecture (Mermaid)
-```mermaid
-flowchart TD
-  A[Stream Simulator + Drift Injector] --> B[Feature Expansion]
-  B --> C[Rolling PCA]
-  C --> D[Detectors: Baseline / ISO / AE]
-  D --> E[Drift Detection Hooks]
-  D --> F[Explanations]
-  E --> G[Adaptive Ensemble]
-  F --> H[Unified Anomaly Output]
-  G --> H
-  H --> I[Shiny Demo / Scripts]
-  I --> J[Figures / Results]
+## Figures
+```r
+source("scripts/make_figures.R")
 ```
+Saves plots to `results/figures/` (precision vs dimensionality, time-to-detection proxy, ensemble weights, top explanation features).
 
-## Why this matters for housing markets
-- Markets drift with rates, inventory, and seasonality; detectors must adapt.
-- Local shocks (micro-markets) need contextual detection, not static thresholds.
-- Explainability builds trust with operators and stakeholders.
-
-## What I'd build next
-- Kafka-backed streaming + plumber API for scoring.
-- Spatial neighborhood graph features (sf) for collective anomalies.
-- Deeper online learning for thresholds and AE fine-tuning.
-
-## Resume-ready bullets
-- Built a drift-aware, streaming anomaly platform in R with adaptive ensemble (baseline/Isolation Forest/torch AE), rolling PCA, and explainability mapped back to housing features.
-- Implemented Shiny live demo with drift/anomaly controls, weight trajectories, and explanation panels; experiment runner for sweeps.
-- Added evaluation scripts, reproducible renv setup, and testthat coverage across streaming, features, detectors, ensemble, and explanations.
-
-## Next Milestones
-- Add Isolation Forest + torch autoencoder detectors
-- Adaptive ensemble + explainability
-- Shiny live demo
+## Write-up
+See `WRITEUP.md` for a short blog-style overview (problem, design, results, lessons).
