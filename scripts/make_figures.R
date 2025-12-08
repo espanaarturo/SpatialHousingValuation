@@ -26,12 +26,14 @@ if (length(exp_files)) {
   df_all <- df_all %>%
     mutate(win = as.numeric(window_id)) %>%
     group_by(file) %>%
-    mutate(post_drift = win >= max(win) / 2)
+    mutate(post_drift = win >= max(win) / 2) %>%
+    ungroup()
 
   # Proxy time-to-detection: first anomaly per file pre/post
   ttd <- df_all %>%
     filter(is_anomaly_ensemble) %>%
-    summarise(ttd = min(win), .by = c(file, post_drift))
+    group_by(file, post_drift) %>%
+    summarise(ttd = min(win), .groups = "drop")
 
   if (nrow(ttd)) {
     p_ttd <- ggplot(ttd, aes(post_drift, ttd, fill = post_drift)) +
