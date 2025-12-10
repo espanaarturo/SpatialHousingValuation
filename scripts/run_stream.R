@@ -8,7 +8,90 @@ ensure_packages <- function(pkgs) {
   invisible(NULL)
 }
 
-run_stream_with_cfg <- function(cfg, write_out = TRUE, quiet = FALSE) {
+load_run_deps <- function(root_dir = ".") {
+  root_dir <- normalizePath(root_dir)
+  source(file.path(root_dir, "R/utils/helpers.R"))
+  source(file.path(root_dir, "R/utils/logging.R"))
+  source(file.path(root_dir, "R/detectors/detector_interface.R"))
+  source(file.path(root_dir, "R/detectors/baseline_mad.R"))
+  source(file.path(root_dir, "R/detectors/isolation_forest.R"))
+  source(file.path(root_dir, "R/detectors/autoencoder_torch.R"))
+  source(file.path(root_dir, "R/ensemble/weighted_ensemble.R"))
+  source(file.path(root_dir, "R/explain/baseline_explain.R"))
+  source(file.path(root_dir, "R/explain/iso_explain.R"))
+  source(file.path(root_dir, "R/explain/ae_explain.R"))
+  source(file.path(root_dir, "R/explain/pca_mapping.R"))
+  source(file.path(root_dir, "R/streaming/stream_simulator.R"))
+  source(file.path(root_dir, "R/streaming/windowing.R"))
+  source(file.path(root_dir, "R/features/feature_expansion.R"))
+  source(file.path(root_dir, "R/features/rolling_pca.R"))
+  source(file.path(root_dir, "R/drift/drift_detection.R"))
+}
+
+normalize_cfg <- function(cfg) {
+  # If already nested, return as-is
+  if (!is.null(cfg$stream) && !is.null(cfg$window)) return(cfg)
+
+  if (is.null(cfg) || length(cfg) == 0) cfg <- list()
+
+  # defaults
+  default_markets <- c("metro_north", "metro_south")
+  if (is.null(cfg$stream) || !is.list(cfg$stream)) cfg$stream <- list()
+  if (is.null(cfg$window) || !is.list(cfg$window)) cfg$window <- list()
+  if (is.null(cfg$features) || !is.list(cfg$features)) cfg$features <- list()
+  if (is.null(cfg$pca) || !is.list(cfg$pca)) cfg$pca <- list(k = 10, refit_every = 5)
+  if (is.null(cfg$detectors) || !is.list(cfg$detectors) || is.atomic(cfg$detectors)) cfg$detectors <- list()
+  if (is.null(cfg$ensemble) || !is.list(cfg$ensemble)) cfg$ensemble <- list()
+  if (is.null(cfg$logging) || !is.list(cfg$logging)) cfg$logging <- list(out_dir = "results", output_name = "baseline_anomalies.csv")
+
+  # stream
+  cfg$stream$n_steps <- cfg$stream$n_steps %||% cfg$n_steps %||% 200
+  cfg$stream$markets <- cfg$stream$markets %||% cfg$markets %||% default_markets
+  cfg$stream$base_rate <- cfg$stream$base_rate %||% cfg$base_rate %||% 1000
+  cfg$stream$anomaly_rate <- cfg$stream$anomaly_rate %||% cfg$anomaly_rate %||% 0.05
+  cfg$stream$drift <- cfg$stream$drift %||% list(
+    enabled = TRUE,
+    type = cfg$drift_type %||% "abrupt_rate_hike",
+    start_step = cfg$drift_start %||% 120,
+    magnitude = cfg$drift_magnitude %||% 0.15
+  )
+  cfg$stream$seed <- cfg$stream$seed %||% cfg$seed
+
+  # window
+  cfg$window$type <- cfg$window$type %||% cfg$window_type %||% "sliding"
+  cfg$window$size <- cfg$window$size %||% cfg$window_size %||% 50
+  cfg$window$step <- cfg$window$step %||% cfg$window_step %||% 10
+
+  # features
+  cfg$features$target_dim <- cfg$features$target_dim %||% cfg$target_dim %||% 300
+  cfg$features$interaction <- cfg$features$interaction %||% TRUE
+  cfg$features$rolling_stats <- cfg$features$rolling_stats %||% TRUE
+  cfg$features$noise_sd <- cfg$features$noise_sd %||% 0.1
+
+  # detectors
+  flat_det <- cfg$detectors
+  if (is.atomic(flat_det)) {
+    cfg$detectors <- list(
+      baseline_mad = list(enabled = "baseline" %in% flat_det),
+      isolation_forest = list(enabled = "iso" %in% flat_det),
+      autoencoder_torch = list(enabled = "ae" %in% flat_det)
+    )
+  }
+  cfg$detectors$baseline_mad <- cfg$detectors$baseline_mad %||% list(enabled = TRUE)
+  cfg$detectors$isolation_forest <- cfg$detectors$isolation_forest %||% list(enabled = TRUE)
+  cfg$detectors$autoencoder_torch <- cfg$detectors$autoencoder_torch %||% list(enabled = FALSE)
+
+  # ensemble
+  cfg$ensemble$enabled <- cfg$ensemble$enabled %||% cfg$ensemble %||% TRUE
+  cfg$ensemble$alpha <- cfg$ensemble$alpha %||% 0.3
+  cfg$ensemble$threshold <- cfg$ensemble$threshold %||% 1.0
+
+  cfg
+}
+
+run_stream_with_cfg <- function(cfg, write_out = TRUE, quiet = FALSE, root_dir = ".") {
+  cfg <- normalize_cfg(cfg)
+  load_run_deps(root_dir)
   stream <- simulate_stream(
     n_steps = cfg$stream$n_steps,
     markets = cfg$stream$markets,
@@ -151,6 +234,18 @@ run_stream_with_cfg <- function(cfg, write_out = TRUE, quiet = FALSE) {
 
     anomalies <- sum(ens_flag)
     log_event("info", "Window scored", list(window = idx, anomalies = anomalies, drift = drift_res$drift), quiet = quiet)
+
+    # ensure original key fields are available for downstream plots
+    if (!"price" %in% names(base_tbl) && "price" %in% names(win)) {
+      base_tbl$price <- win$price
+    }
+    if (!"market" %in% names(base_tbl) && "market" %in% names(win)) {
+      base_tbl$market <- win$market
+    }
+    if (!"window_id" %in% names(base_tbl)) {
+      base_tbl$window_id <- idx
+    }
+
     base_tbl$drift_detected <- drift_res$drift
     base_tbl$ks_metric <- drift_res$metrics$ks %||% NA
     base_tbl$mean_shift <- drift_res$metrics$mean_shift %||% NA
@@ -177,26 +272,10 @@ run_stream_with_cfg <- function(cfg, write_out = TRUE, quiet = FALSE) {
 
 run_stream <- function(config_path = "configs/demo.yaml") {
   ensure_packages(c("yaml", "tibble", "dplyr", "purrr", "readr", "zoo"))
-  source("R/utils/helpers.R")
-  source("R/utils/logging.R")
-  source("R/detectors/detector_interface.R")
-  source("R/detectors/baseline_mad.R")
-  source("R/detectors/isolation_forest.R")
-  source("R/detectors/autoencoder_torch.R")
-  source("R/ensemble/weighted_ensemble.R")
-  source("R/explain/baseline_explain.R")
-  source("R/explain/iso_explain.R")
-  source("R/explain/ae_explain.R")
-  source("R/explain/pca_mapping.R")
-  source("R/streaming/stream_simulator.R")
-  source("R/streaming/windowing.R")
-  source("R/features/feature_expansion.R")
-  source("R/features/rolling_pca.R")
-  source("R/drift/drift_detection.R")
-
+  load_run_deps(".")
   cfg <- yaml::read_yaml(config_path)
   log_event("info", "Loaded config", list(path = config_path))
-  res <- run_stream_with_cfg(cfg, write_out = TRUE)
+  res <- run_stream_with_cfg(cfg, write_out = TRUE, root_dir = ".")
   invisible(res$out)
 }
 

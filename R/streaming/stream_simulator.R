@@ -1,14 +1,28 @@
 #' Streaming simulator for housing signals
 #'
 #' Generates synthetic housing events with optional anomaly rate.
-simulate_stream <- function(n_steps,
+simulate_stream <- function(n_steps = NULL,
                             markets,
                             base_rate = 1000,
                             anomaly_rate = 0.05,
                             drift = list(enabled = FALSE, type = "none", start_step = 1, magnitude = 0.1),
-                            seed = NULL) {
+                            seed = NULL,
+                            start_time = NULL,
+                            step = "1 min",
+                            fallback_n = 200) {
   if (!is.null(seed)) set.seed(seed)
-  timestamps <- seq.POSIXt(from = Sys.time(), by = "1 min", length.out = n_steps)
+
+  # derive n_steps if missing
+  if (is.null(n_steps)) n_steps <- fallback_n
+  n_steps <- as.integer(n_steps)
+  stopifnot(length(n_steps) == 1, !is.na(n_steps), n_steps > 0)
+
+  if (is.null(markets) || length(markets) == 0) {
+    markets <- c("metro_north", "metro_south")
+  }
+
+  if (is.null(start_time)) start_time <- Sys.time()
+  timestamps <- seq.POSIXt(from = start_time, by = step, length.out = n_steps)
   market <- sample(markets, n_steps, replace = TRUE)
   price <- stats::rnorm(n_steps, mean = base_rate, sd = 80)
   rent <- stats::rnorm(n_steps, mean = base_rate / 3, sd = 30)
@@ -42,9 +56,9 @@ simulate_stream <- function(n_steps,
   anom_idx <- sample(seq_len(n_steps), n_anom)
   price[anom_idx] <- price[anom_idx] + stats::rnorm(n_anom, mean = 400, sd = 50)
 
-  tibble::tibble(
+  out <- tibble::tibble(
     timestamp = timestamps,
-    id = seq_len(n_steps),
+    window_id = seq_len(n_steps),
     market = market,
     price = price,
     rent = rent,
@@ -54,6 +68,18 @@ simulate_stream <- function(n_steps,
     unemp_proxy = unemp_proxy,
     is_anomaly_true = seq_len(n_steps) %in% anom_idx
   )
+
+  if (!("price" %in% names(out)) && "idxprice" %in% names(out)) {
+    out <- dplyr::rename(out, price = idxprice)
+  }
+
+  required_cols <- c("timestamp", "price", "window_id")
+  missing_cols <- setdiff(required_cols, names(out))
+  if (length(missing_cols)) {
+    warning("simulate_stream missing required columns: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out
 }
 
 

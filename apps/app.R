@@ -4,8 +4,13 @@ library(dplyr)
 library(ggplot2)
 library(purrr)
 
-source("../scripts/run_stream.R")
-source("../scripts/run_experiment.R")
+options(shiny.sanitize.errors = FALSE)
+
+wd <- normalizePath(getwd())
+proj_dir <- if (basename(wd) == "apps") normalizePath(file.path(wd, "..")) else wd
+
+source(file.path(proj_dir, "scripts/run_stream.R"))
+source(file.path(proj_dir, "scripts/run_experiment.R"))
 
 detector_available <- function(det) {
   if (det == "autoencoder_torch") {
@@ -39,7 +44,7 @@ ui <- page_navbar(
           actionButton("reset_btn", "Reset", class = "btn-outline-danger"),
           actionButton("export_btn", "Export run", class = "btn-outline-primary")
         ),
-        main = fluidPage(
+        fluidPage(
           fluidRow(
             column(6, card(card_header("Market & Anomalies"), plotOutput("plot_market", height = 300))),
             column(6, card(card_header("Drift (KS)"), plotOutput("plot_drift", height = 300)))
@@ -51,7 +56,11 @@ ui <- page_navbar(
           fluidRow(
             column(12, card(card_header("Run summary"), tableOutput("run_summary")))
           ),
-          card(card_header("Preview"), tableOutput("table_head"))
+          card(card_header("Preview"), tableOutput("table_head")),
+          card(card_header("Live stream (debug)"),
+               plotOutput("live_stream_plot", height = 200),
+               tableOutput("live_stream_table"),
+               verbatimTextOutput("live_stream_debug"))
         )
       )
   ),
@@ -89,7 +98,7 @@ server <- function(input, output, session) {
   run_cache <- reactiveVal(NULL)
 
   current_cfg <- reactive({
-    cfg <- yaml::read_yaml("../configs/demo.yaml")
+    cfg <- yaml::read_yaml(file.path(proj_dir, "configs/demo.yaml"))
     cfg$stream$drift$enabled <- input$drift_type != "none"
     cfg$stream$drift$type <- input$drift_type
     cfg$stream$drift$magnitude <- input$drift_mag
@@ -104,10 +113,54 @@ server <- function(input, output, session) {
     cfg
   })
 
+  observeEvent(TRUE, {
+    if (is.null(run_cache())) generate_run()
+  }, once = TRUE, ignoreInit = FALSE)
+
+  output$live_stream_plot <- renderPlot({
+    validate(
+      need(!is.null(run_cache()), "Click Reset to generate a run"),
+      need(nrow(current_data()) > 0, "Waiting for data")
+    )
+    rc <- run_cache()
+    i <- current_idx()
+    df <- rc$data %>% filter(as.numeric(window_id) <= i)
+    ggplot(df, aes(as.numeric(window_id), score_ensemble)) +
+      geom_line(color = "#16a085") +
+      geom_point(size = 1.2, color = "#27ae60") +
+      labs(title = "Ensemble score over windows", x = "Window", y = "Ensemble score")
+  })
+
+  output$live_stream_table <- renderTable({
+    validate(
+      need(!is.null(run_cache()), "Click Reset to generate a run"),
+      need(nrow(current_data()) > 0, "Waiting for data")
+    )
+    rc <- run_cache()
+    i <- current_idx()
+    df <- rc$data %>% filter(as.numeric(window_id) <= i)
+    head(df[, intersect(c("window_id","timestamp","score_ensemble","is_anomaly_ensemble","ks_metric","top_features"), names(df)), drop = FALSE], 10)
+  })
+
+  output$live_stream_debug <- renderPrint({
+    list(
+      cache_ready = !is.null(run_cache()),
+      current_idx = current_idx(),
+      max_windows = if (!is.null(run_cache())) run_cache()$n_windows else NA,
+      drift_type = input$drift_type,
+      anomaly_rate = input$anom_rate,
+      target_dim = input$dim
+    )
+  })
+
   generate_run <- function() {
     cfg <- current_cfg()
-    res <- run_stream_with_cfg(cfg, write_out = FALSE, quiet = TRUE)
-    run_cache(list(data = res$out, cfg = cfg, max_win = max(as.numeric(res$out$window_id))))
+    res <- run_stream_with_cfg(cfg, write_out = FALSE, quiet = TRUE, root_dir = proj_dir)
+    run_cache(list(
+      data = res$out,
+      cfg = cfg,
+      n_windows = max(as.numeric(res$out$window_id))
+    ))
     current_idx(1)
     auto_running(FALSE)
     update_select_input_choices()
@@ -115,37 +168,48 @@ server <- function(input, output, session) {
 
   observeEvent(list(input$drift_type, input$drift_mag, input$anom_rate, input$dim, input$window_type, input$detectors, input$ensemble_on), {
     generate_run()
-  })
+  }, ignoreInit = FALSE)
+
+  observeEvent(TRUE, {
+    if (is.null(run_cache())) generate_run()
+  }, once = TRUE)
 
   observeEvent(input$reset_btn, {
+    message("reset clicked")
     generate_run()
+    current_idx(1)
   })
 
   observeEvent(input$step_btn, {
+    message("step clicked")
     req(run_cache())
-    idx <- current_idx()
-    if (idx < run_cache()$max_win) current_idx(idx + 1)
+    max_w <- run_cache()$n_windows %||% length(unique(run_cache()$data$window_id))
+    current_idx(min(current_idx() + 1, max_w))
   })
 
   observeEvent(input$auto_btn, {
+    message("play clicked")
     auto_running(TRUE)
   })
   observeEvent(input$stop_btn, {
+    message("pause clicked")
     auto_running(FALSE)
   })
 
   observe({
     req(run_cache())
     if (!isTRUE(auto_running())) return()
-    if (current_idx() >= run_cache()$max_win) {
+    if (current_idx() >= run_cache()$n_windows) {
       auto_running(FALSE)
       return()
     }
     invalidateLater(800, session)
-    current_idx(current_idx() + 1)
+    max_w <- run_cache()$n_windows %||% length(unique(run_cache()$data$window_id))
+    current_idx(min(current_idx() + 1, max_w))
   })
 
   observeEvent(input$export_btn, {
+    message("export clicked")
     req(run_cache())
     df <- run_cache()$data
     if (!dir.exists("results")) dir.create("results", recursive = TRUE)
@@ -153,49 +217,67 @@ server <- function(input, output, session) {
     showNotification("Exported to results/shiny_stream.csv", type = "message")
   })
 
-  run_stream_cfg <- function(cfg) {
-    # copy of run_stream but returning data without writing disk
-    ensure_packages(c("zoo","yaml","tibble","dplyr","purrr","readr"))
-    source("../R/utils/helpers.R")
-    source("../R/utils/logging.R")
-    source("../R/detectors/detector_interface.R")
-    source("../R/detectors/baseline_mad.R")
-    source("../R/detectors/isolation_forest.R")
-    source("../R/detectors/autoencoder_torch.R")
-    source("../R/ensemble/weighted_ensemble.R")
-    source("../R/explain/baseline_explain.R")
-    source("../R/explain/iso_explain.R")
-    source("../R/explain/ae_explain.R")
-    source("../R/explain/pca_mapping.R")
-    source("../R/streaming/stream_simulator.R")
-    source("../R/streaming/windowing.R")
-    source("../R/features/feature_expansion.R")
-    source("../R/features/rolling_pca.R")
-    source("../R/drift/drift_detection.R")
-    res <- run_stream_with_cfg(cfg)
-    res
-  }
-
   current_data <- reactive({
     req(run_cache())
+    i <- current_idx()
     df <- run_cache()$data
-    df %>% filter(as.numeric(window_id) <= current_idx())
+    df %>% filter(as.numeric(window_id) <= i)
   })
 
   output$plot_market <- renderPlot({
-    req(current_data())
-    df <- current_data()
-    ggplot(df, aes(timestamp, price)) +
-      geom_line(color = "#2c3e50") +
-      geom_point(data = subset(df, is_anomaly_ensemble), aes(y = price, color = "Anomaly"), size = 1.5) +
-      scale_color_manual(values = c("Anomaly" = "#e74c3c"), guide = guide_legend(title = "")) +
-      labs(title = "Market price with anomalies", x = "Time", y = "Price") +
-      theme_minimal()
+    rc <- run_cache()
+    i  <- current_idx()
+
+    validate(
+      need(!is.null(rc), "Cache not ready. Click Reset to generate a run."),
+      need(!is.null(rc$data), "Cache data missing. Click Reset."),
+      need(nrow(rc$data) > 0, "No stream data available yet.")
+    )
+
+    required_cols <- c("timestamp", "window_id")
+    alt_price_cols <- c("price","idxprice","price_idx","home_value","median_price")
+    alt_anom_cols <- c("is_anomaly_ensemble", "is_anomaly", "is_anomaly_true")
+
+    price_col <- alt_price_cols[alt_price_cols %in% names(rc$data)][1]
+    anom_col  <- alt_anom_cols[alt_anom_cols %in% names(rc$data)][1]
+
+    validate(
+      need(all(required_cols %in% names(rc$data)),
+           paste("Missing fields for Market & Anomalies plot:",
+                 paste(setdiff(required_cols, names(rc$data)), collapse = ", "))),
+      need(!is.null(price_col),
+           paste("Missing price-like column. Available cols:", paste(names(rc$data), collapse = ", "))),
+      need(!is.null(anom_col),
+           paste("Missing anomaly flag column. Available cols:", paste(names(rc$data), collapse = ", ")))
+    )
+
+    df <- rc$data |>
+      dplyr::mutate(window_id = as.numeric(window_id)) |>
+      dplyr::filter(window_id <= i)
+
+    tryCatch({
+      ggplot(df, aes(x = timestamp, y = .data[[price_col]], color = .data[[anom_col]])) +
+        geom_line() +
+        geom_point(alpha = 0.7) +
+        labs(title = "Market & Anomalies",
+             subtitle = paste("Up to window", i),
+             color = "Anomaly") +
+        theme_minimal(base_size = 14)
+    }, error = function(e) {
+      ggplot() +
+        annotate("text", x = 0, y = 0,
+                 label = paste("Market plot failed:", conditionMessage(e))) +
+        theme_void()
+    })
   })
 
   output$plot_drift <- renderPlot({
-    req(current_data())
-    df <- current_data()
+    validate(
+      need(!is.null(run_cache()), "Cache not ready. Click Reset to generate a run."),
+      need(nrow(current_data()) > 0, "Waiting for data")
+    )
+    i <- current_idx()
+    df <- run_cache()$data %>% filter(as.numeric(window_id) <= i)
     ggplot(df, aes(as.numeric(window_id), ks_metric, color = drift_detected)) +
       geom_line() +
       geom_point() +
@@ -205,8 +287,12 @@ server <- function(input, output, session) {
   })
 
   output$plot_weights <- renderPlot({
-    req(current_data())
-    df <- current_data()
+    validate(
+      need(!is.null(run_cache()), "Cache not ready. Click Reset to generate a run."),
+      need(nrow(current_data()) > 0, "Waiting for data")
+    )
+    i <- current_idx()
+    df <- run_cache()$data %>% filter(as.numeric(window_id) <= i)
     plt <- ggplot(df, aes(as.numeric(window_id)))
     plt <- plt + geom_line(aes(y = weight_baseline, color = "baseline"))
     if ("weight_iso" %in% names(df)) plt <- plt + geom_line(aes(y = weight_iso, color = "iso"))
@@ -217,8 +303,12 @@ server <- function(input, output, session) {
   })
 
   output$plot_thresholds <- renderPlot({
-    req(current_data())
-    df <- current_data()
+    validate(
+      need(!is.null(run_cache()), "Cache not ready. Click Reset to generate a run."),
+      need(nrow(current_data()) > 0, "Waiting for data")
+    )
+    i <- current_idx()
+    df <- run_cache()$data %>% filter(as.numeric(window_id) <= i)
     ggplot(df, aes(as.numeric(window_id))) +
       geom_line(aes(y = score_ensemble, color = "score")) +
       geom_hline(yintercept = 1.0, linetype = "dashed", color = "#7f8c8d") +
@@ -228,8 +318,10 @@ server <- function(input, output, session) {
   })
 
   output$table_head <- renderTable({
+    req(run_cache())
     req(current_data())
-    df <- current_data()
+    i <- current_idx()
+    df <- run_cache()$data %>% filter(as.numeric(window_id) <= i)
     cols <- intersect(c("window_id","timestamp","score","score_iso","score_ae","score_ensemble","is_anomaly_ensemble","top_features"), names(df))
     head(df[, cols, drop = FALSE], 5)
   })
@@ -273,8 +365,8 @@ server <- function(input, output, session) {
 
   exp_results <- reactiveVal(NULL)
   observeEvent(input$run_exp, {
-    exp_results(run_experiment("../configs/demo.yaml", drift_types = c("abrupt_rate_hike","gradual_seasonal"), anomaly_rates = c(0.05), target_dims = c(100,300)))
-  })
+    exp_results(run_experiment(file.path(proj_dir, "configs/demo.yaml"), drift_types = c("abrupt_rate_hike","gradual_seasonal"), anomaly_rates = c(0.05), target_dims = c(100,300), root_dir = proj_dir))
+  }, ignoreInit = TRUE)
 
   output$exp_table <- renderTable({
     req(exp_results())

@@ -11,9 +11,10 @@ ensure_packages <- function(pkgs) {
 run_experiment <- function(config_path = "configs/demo.yaml",
                            drift_types = c("abrupt_rate_hike", "gradual_seasonal", "local_micro"),
                            anomaly_rates = c(0.05, 0.1),
-                           target_dims = c(100, 500)) {
+                           target_dims = c(100, 500),
+                           root_dir = ".") {
   ensure_packages(c("yaml", "dplyr", "purrr", "readr"))
-  source("scripts/run_stream.R")
+  load_run_deps(root_dir)
 
   base_cfg <- yaml::read_yaml(config_path)
 
@@ -35,7 +36,7 @@ run_experiment <- function(config_path = "configs/demo.yaml",
     tmp_cfg <- tempfile(fileext = ".yaml")
     yaml::write_yaml(cfg, tmp_cfg)
 
-    out <- run_stream(tmp_cfg)
+    out <- run_stream_with_cfg(cfg, write_out = TRUE, quiet = TRUE, root_dir = root_dir)$out
     detected <- sum(out$is_anomaly, na.rm = TRUE)
     truth <- sum(out$is_anomaly_true, na.rm = TRUE)
     tp <- sum(out$is_anomaly & out$is_anomaly_true, na.rm = TRUE)
